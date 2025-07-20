@@ -10,7 +10,7 @@ Just run this command on your server:
 bash <(curl -Ls https://raw.githubusercontent.com/asphalte-khaki/IPV4-privet.Tunell/main/gre-tunnel.sh)
 
 
-🚀 Features
+#🚀 Features
 
     Fully automated GRE tunnel setup between two Linux servers (Ubuntu/Debian)
 
@@ -33,7 +33,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/asphalte-khaki/IPV4-privet.Tun
     Clean and fast. Less than 100 lines of bash.
 
 
-👨‍💻 Author
+#👨‍💻Author
 
     Asphalte-Khaki
     Telegram: @Setaregan_Soren
