@@ -1,14 +1,74 @@
 #!/bin/bash
 
+# GRE Tunnel Manager - Advanced Version
+
 CONFIG_DIR="/etc/gre-tunnels"
-BACKUP_DIR="/etc/gre-tunnels/backup"
+SERVICE_DIR="/etc/systemd/system"
+LOG_FILE="/var/log/gre-tunnel-manager.log"
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+BLUE='\033[0;36m'
+YELLOW='\033[1;33m'
+MAGENTA="\e[35m"
+NC='\033[0m' # No Color
+
+function log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG_FILE"
+}
+
+function print_success() {
+    echo -e "${GREEN}[✔] $1${NC}"
+}
+
+function print_error() {
+    echo -e "${RED}[✘] $1${NC}"
+}
+
+function print_info() {
+    echo -e "${BLUE}[i] $1${NC}"
+}
+
+function ensure_config_dir() {
+    if [ ! -d "$CONFIG_DIR" ]; then
+        mkdir -p "$CONFIG_DIR"
+    fi
+}
+
+function create_gre_script() {
+    local IFACE=$1
+    local LOCAL_IP=$2
+    local REMOTE_IP=$3
+    local PRIV_IP=$4
+    local MTU=$5
+
+    ensure_config_dir
+
+    cat > /usr/local/sbin/gre-${IFACE}.sh <<EOF
+#!/bin/bash
+ip tunnel del ${IFACE} 2>/dev/null
+ip tunnel add ${IFACE} mode gre local ${LOCAL_IP} remote ${REMOTE_IP} ttl 255
+ip link set ${IFACE} mtu ${MTU}
+ip link set ${IFACE} up
+ip addr add ${PRIV_IP} dev ${IFACE}
+EOF
+
+    chmod +x /usr/local/sbin/gre-${IFACE}.sh
+}
+
+display_info() {
+    IP=$(curl -s ipv4.icanhazip.com)
+    ISP=$(curl -s https://ipinfo.io/org | sed 's/^.*: //')
+    echo -e "${CYAN}ipv4:${NC} $IP"
+    echo -e "${CYAN}isp :${NC} $ISP"
+}
 
 function create_systemd_service() {
     local IFACE=$1
 
-    cat > /etc/systemd/system/gre-${IFACE}.service <<EOF
+    cat > ${SERVICE_DIR}/gre-${IFACE}.service <<EOF
 [Unit]
-Description=GRE Tunnel: $IFACE
+Description=GRE Tunnel: ${IFACE}
 After=network-online.target
 Wants=network-online.target
 
@@ -22,153 +82,376 @@ WantedBy=multi-user.target
 EOF
 }
 
-function create_gre_script() {
-    local IFACE=$1
-    local LOCAL_IP=$2
-    local REMOTE_IP=$3
-    local PRIV_IP=$4
+function install_gre() {
+    echo "Installing new GRE tunnel..."
+    read -p "Interface name (e.g. gre1): " IFACE
+    if [[ -z "$IFACE" ]]; then
+        print_error "Interface name cannot be empty."
+        return
+    fi
 
-    mkdir -p "$CONFIG_DIR"
+    read -p "Local public IP (0.0.0.0): " LOCAL_IP
+    read -p "Remote public IP: " REMOTE_IP
+    read -p "Private IP local with CIDR (e.g. 10.0.0.1/24): " PRIV_IP
+    read -p "MTU (default 1472): " MTU
+    MTU=${MTU:-1472}
 
-    cat > /usr/local/sbin/gre-${IFACE}.sh <<EOF
-#!/bin/bash
-ip tunnel del ${IFACE} 2>/dev/null
-ip tunnel add ${IFACE} mode gre local ${LOCAL_IP} remote ${REMOTE_IP} ttl 255
-ip link set ${IFACE} up
-ip addr add ${PRIV_IP} dev ${IFACE}
+    # Save config
+    ensure_config_dir
+    cat > "$CONFIG_DIR/${IFACE}.conf" <<EOF
+IFACE=${IFACE}
+LOCAL_IP=${LOCAL_IP}
+REMOTE_IP=${REMOTE_IP}
+PRIV_IP=${PRIV_IP}
+MTU=${MTU}
 EOF
 
-    chmod +x /usr/local/sbin/gre-${IFACE}.sh
-}
-
-function install_gre() {
-    read -p "Enter the interface name (example: gre1): " IFACE
-    read -p "Enter the local IP (your public IP): " LOCAL_IP
-    read -p "Enter the remote IP (target public IP): " REMOTE_IP
-    read -p "Enter the private IP with mask (example: 10.0.0.1/24): " PRIV_IP
-
-    create_gre_script "$IFACE" "$LOCAL_IP" "$REMOTE_IP" "$PRIV_IP"
+    create_gre_script "$IFACE" "$LOCAL_IP" "$REMOTE_IP" "$PRIV_IP" "$MTU"
     create_systemd_service "$IFACE"
 
+    systemctl daemon-reexec
     systemctl daemon-reload
     systemctl enable gre-${IFACE}.service
     systemctl start gre-${IFACE}.service
 
-    echo "✅ GRE Tunnel ${IFACE} installed and enabled on boot."
+    if [[ $? -eq 0 ]]; then
+        print_success "GRE tunnel ${IFACE} installed and started."
+        log_msg "Installed GRE tunnel ${IFACE} (${LOCAL_IP} -> ${REMOTE_IP})"
+    else
+        print_error "Failed to start tunnel ${IFACE}."
+        log_msg "Failed to start GRE tunnel ${IFACE}"
+    fi
 }
 
 function uninstall_gre() {
-    echo "Existing GRE tunnels:"
-    ls /usr/local/sbin/gre-*.sh 2>/dev/null | sed 's|.*/gre-||; s/.sh//'
-    echo "---------------------------------------------"
-    read -p "Enter the interface name to uninstall (example: gre1): " IFACE
+    echo "Installed GRE tunnels:"
+    ls "$CONFIG_DIR"/*.conf 2>/dev/null | xargs -n1 basename | sed 's/.conf//'
+    read -p "Enter tunnel interface to uninstall (e.g. gre1): " IFACE
+    if [[ ! -f "$CONFIG_DIR/${IFACE}.conf" ]]; then
+        print_error "Tunnel config not found."
+        return
+    fi
 
     systemctl stop gre-${IFACE}.service
     systemctl disable gre-${IFACE}.service
-    rm -f /etc/systemd/system/gre-${IFACE}.service
+    rm -f ${SERVICE_DIR}/gre-${IFACE}.service
     rm -f /usr/local/sbin/gre-${IFACE}.sh
+    rm -f "$CONFIG_DIR/${IFACE}.conf"
     ip tunnel del ${IFACE} 2>/dev/null
     systemctl daemon-reload
 
-    echo "❌ GRE Tunnel ${IFACE} removed."
+    print_success "GRE tunnel ${IFACE} removed."
+    log_msg "Uninstalled GRE tunnel ${IFACE}"
 }
 
-function list_tunnels() {
-    echo "🔍 Active GRE Tunnels:"
-    ip tunnel show | grep gre
-}
-
-function show_status() {
-    echo "📋 GRE Tunnel systemd status:"
-    systemctl list-units --type=service | grep gre-
-}
-
-function test_connectivity() {
-    read -p "Enter destination IP to ping (usually private IP on other side): " DST
-    ping -c 4 "$DST"
-}
-
-function edit_tunnel() {
-    read -p "Enter the interface name to edit (example: gre1): " IFACE
-    read -p "New Local IP: " LOCAL
-    read -p "New Remote IP: " REMOTE
-    read -p "New Private IP/Mask: " PRIV
-
-    create_gre_script "$IFACE" "$LOCAL" "$REMOTE" "$PRIV"
+function restart_gre() {
+    read -p "Enter tunnel interface to restart (e.g. gre1): " IFACE
     systemctl restart gre-${IFACE}.service
-    echo "🛠 Tunnel $IFACE updated and restarted."
-}
-
-function backup_configs() {
-    mkdir -p "$BACKUP_DIR"
-    cp /usr/local/sbin/gre-*.sh "$BACKUP_DIR" 2>/dev/null
-    cp /etc/systemd/system/gre-*.service "$BACKUP_DIR" 2>/dev/null
-    echo "💾 All GRE configs backed up to $BACKUP_DIR"
-}
-
-function delete_all_gres() {
-    echo "⚠️ Are you sure you want to delete ALL GRE tunnels? (y/n)"
-    read CONFIRM
-    if [[ "$CONFIRM" == "y" ]]; then
-        for FILE in /usr/local/sbin/gre-*.sh; do
-            IFACE=$(basename "$FILE" | sed 's/gre-//; s/.sh//')
-            systemctl stop gre-${IFACE}.service
-            systemctl disable gre-${IFACE}.service
-            rm -f /etc/systemd/system/gre-${IFACE}.service
-            rm -f /usr/local/sbin/gre-${IFACE}.sh
-            ip tunnel del ${IFACE} 2>/dev/null
-        done
-        systemctl daemon-reload
-        echo "❌ All GRE tunnels removed."
+    if [[ $? -eq 0 ]]; then
+        print_success "Tunnel ${IFACE} restarted."
+        log_msg "Restarted GRE tunnel ${IFACE}"
     else
-        echo "❎ Operation canceled."
+        print_error "Failed to restart tunnel ${IFACE}."
+        log_msg "Failed to restart GRE tunnel ${IFACE}"
     fi
 }
 
 function optimize_tunnel() {
-    read -p "Enter the interface name to optimize (example: gre1): " IFACE
-    echo "⚙️ Optimizing GRE tunnel $IFACE..."
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "\e[31m[ERROR]\e[0m Run as root." >&2
+        return 1
+    fi
 
-    # TTL and Keepalive
-    ip tunnel change ${IFACE} ttl 255 keepalive 5 4 2>/dev/null
+    read -rp "Enter GRE interface name (e.g. gre1): " IFACE
+    [[ ! "$IFACE" =~ ^[a-zA-Z0-9_]+$ ]] && { echo -e "\e[31m[ERROR]\e[0m Invalid interface name."; return 1; }
+    ip link show "$IFACE" &>/dev/null || { echo -e "\e[31m[ERROR]\e[0m Interface not found."; return 1; }
 
-    # Enable IP Forwarding
-    sysctl -w net.ipv4.ip_forward=1 >/dev/null
+    echo -e "\e[36m[*] Applying advanced optimizations for VPN over GRE: $IFACE\e[0m"
 
-    # Network performance tunings
-    sysctl -w net.core.rmem_max=26214400 >/dev/null
-    sysctl -w net.core.wmem_max=26214400 >/dev/null
-    sysctl -w net.ipv4.tcp_window_scaling=1 >/dev/null
+    apply_sysctl() {
+        local key="$1"
+        local value="$2"
+        sysctl -qw "$key=$value" && echo -e "\e[32m✓ $key = $value\e[0m" || echo -e "\e[33m✗ Failed: $key = $value\e[0m"
+    }
 
-    echo "✅ Tunnel $IFACE optimized successfully."
+    # Interface-specific
+    apply_sysctl "net.ipv4.conf.${IFACE}.rp_filter" 0
+    apply_sysctl "net.ipv4.conf.${IFACE}.accept_local" 1
+    apply_sysctl "net.ipv4.conf.${IFACE}.accept_redirects" 0
+    apply_sysctl "net.ipv4.conf.${IFACE}.send_redirects" 0
+    apply_sysctl "net.ipv4.conf.${IFACE}.log_martians" 0
+    apply_sysctl "net.ipv4.conf.${IFACE}.proxy_arp" 1
+    apply_sysctl "net.ipv4.conf.${IFACE}.forwarding" 1
+
+    # MTU optimization (dynamic)
+    ip link set dev "$IFACE" mtu 1400
+    echo -e "\e[32m✓ MTU set to 1400 on $IFACE\e[0m"
+
+    # General
+    apply_sysctl "net.ipv4.ip_forward" 1
+    apply_sysctl "net.ipv4.tcp_no_metrics_save" 1
+    apply_sysctl "net.ipv4.tcp_mtu_probing" 1    # Auto-adjust MSS
+    apply_sysctl "net.ipv4.route.flush" 1
+
+    # TCP Performance
+    apply_sysctl "net.ipv4.tcp_window_scaling" 1
+    apply_sysctl "net.ipv4.tcp_timestamps" 0
+    apply_sysctl "net.ipv4.tcp_sack" 1
+    apply_sysctl "net.core.rmem_default" 1048576
+    apply_sysctl "net.core.wmem_default" 1048576
+    apply_sysctl "net.core.rmem_max" 67108864
+    apply_sysctl "net.core.wmem_max" 67108864
+    apply_sysctl "net.ipv4.tcp_rmem" "4096 87380 67108864"
+    apply_sysctl "net.ipv4.tcp_wmem" "4096 65536 67108864"
+
+    # Congestion Control (use BBR if available)
+    if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
+        apply_sysctl "net.ipv4.tcp_congestion_control" "bbr"
+    else
+        apply_sysctl "net.ipv4.tcp_congestion_control" "cubic"
+    fi
+
+    # Fast recovery, ECN, and resilience
+    apply_sysctl "net.ipv4.tcp_ecn" 1
+    apply_sysctl "net.ipv4.tcp_fastopen" 3
+    apply_sysctl "net.ipv4.tcp_syn_retries" 5
+    apply_sysctl "net.ipv4.tcp_retries2" 8
+    apply_sysctl "net.ipv4.tcp_keepalive_time" 20
+    apply_sysctl "net.ipv4.tcp_keepalive_intvl" 10
+    apply_sysctl "net.ipv4.tcp_keepalive_probes" 5
+
+    # Save settings permanently
+    CONF="/etc/sysctl.d/99-${IFACE}-vpn.conf"
+    cat > "$CONF" <<EOF
+# Advanced GRE VPN settings for $IFACE
+
+net.ipv4.conf.${IFACE}.rp_filter = 0
+net.ipv4.conf.${IFACE}.accept_local = 1
+net.ipv4.conf.${IFACE}.accept_redirects = 0
+net.ipv4.conf.${IFACE}.send_redirects = 0
+net.ipv4.conf.${IFACE}.log_martians = 0
+net.ipv4.conf.${IFACE}.proxy_arp = 1
+net.ipv4.conf.${IFACE}.forwarding = 1
+
+net.ipv4.ip_forward = 1
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.route.flush = 1
+
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+net.core.rmem_max = 67108864
+net.core.wmem_max = 67108864
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_timestamps = 0
+net.ipv4.tcp_sack = 1
+
+net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_syn_retries = 5
+net.ipv4.tcp_retries2 = 8
+net.ipv4.tcp_keepalive_time = 20
+net.ipv4.tcp_keepalive_intvl = 10
+net.ipv4.tcp_keepalive_probes = 5
+
+net.ipv4.tcp_congestion_control = $(sysctl -n net.ipv4.tcp_congestion_control)
+EOF
+
+    sysctl --system >/dev/null 2>&1 && echo -e "\e[32m[✓] Settings saved and applied.\e[0m" || echo -e "\e[33m[!] Warning: Reload failed.\e[0m"
+
+    echo -e "\e[36m[*] VPN GRE Tunnel '$IFACE' is now fully optimized.\e[0m"
 }
 
-# Menu
-clear
-echo "=============================="
-echo "      GRE TUNNEL MANAGER"
-echo "=============================="
-echo "1) Install GRE Tunnel"
-echo "2) Uninstall GRE Tunnel"
-echo "3) Show Tunnel Status"
-echo "4) List GRE Tunnels"
-echo "5) Test Tunnel Connectivity"
-echo "6) Edit Existing Tunnel"
-echo "7) Backup Tunnel Configurations"
-echo "8) Delete All GRE Tunnels"
-echo "9) Optimize GRE Tunnel"
-echo "=============================="
-read -p "Select an option [1-9]: " OPTION
+function find_best_mtu() {
+    read -p "Enter remote IP to test MTU: " REMOTE_IP
+    if [[ -z "$REMOTE_IP" ]]; then
+        print_error "Remote IP cannot be empty."
+        return
+    fi
 
-case $OPTION in
-    1) install_gre ;;
-    2) uninstall_gre ;;
-    3) show_status ;;
-    4) list_tunnels ;;
-    5) test_connectivity ;;
-    6) edit_tunnel ;;
-    7) backup_configs ;;
-    8) delete_all_gres ;;
-    9) optimize_tunnel ;;
-    *) echo "❌ Invalid option." ;;
-esac
+    echo -e "${YELLOW}Finding optimal MTU to $REMOTE_IP...${NC}"
+    MAX_MTU=1472
+    MIN_MTU=1200
+    STEP=10
+    MTU=$MAX_MTU
+
+    while [ $MTU -ge $MIN_MTU ]; do
+        if ping -c 1 -M do -s $MTU $REMOTE_IP &>/dev/null; then
+            print_success "Best working MTU found: $((MTU + 28)) (raw MTU: $MTU)"
+            return
+        fi
+        MTU=$((MTU - STEP))
+    done
+
+    print_error "Failed to find optimal MTU"
+}
+
+function list_tunnels() {
+    local BLUE="\e[34m"
+    local GREEN="\e[32m"
+    local RED="\e[31m"
+    local CYAN="\e[36m"
+    local YELLOW="\e[33m"
+    local NC="\e[0m"
+
+    echo -e "${BLUE}Installed GRE tunnels:${NC}"
+
+    shopt -s nullglob
+    local tunnels=("$CONFIG_DIR"/*.conf)
+    shopt -u nullglob
+
+    if [ ${#tunnels[@]} -eq 0 ]; then
+        echo -e "${RED}No tunnels found.${NC}"
+        return
+    fi
+
+    for conf in "${tunnels[@]}"; do
+        IFACE=$(basename "$conf" .conf)
+
+        # Check interface state
+                IFACE_INFO=$(ip link show dev "$IFACE" 2>/dev/null)
+                   if [[ "$IFACE_INFO" == *"<"*UP*","*LOWER_UP*">"* ]]; then
+                     STATE="${GREEN}UP${NC}"
+                   elif [[ "$IFACE_INFO" == *"<"*UP*">"* ]]; then
+                       STATE="${YELLOW}Partially UP${NC}"  # UP-LOWER_UP
+                   else
+                       STATE="${RED}DOWN${NC}"
+                   fi
+
+        # Read RX and TX bytes; fallback to 0 if not available
+        RX=$(cat /sys/class/net/"$IFACE"/statistics/rx_bytes 2>/dev/null || echo "0")
+        TX=$(cat /sys/class/net/"$IFACE"/statistics/tx_bytes 2>/dev/null || echo "0")
+
+        RX_MB=$(awk "BEGIN {printf \"%.2f\", $RX/1024/1024}")
+        TX_MB=$(awk "BEGIN {printf \"%.2f\", $TX/1024/1024}")
+
+        # Print interface info with box-like separator
+        echo -e "${CYAN}========================================${NC}"
+        echo -e "${YELLOW}Interface:${NC} ${IFACE}"
+        echo -e "${YELLOW}State:    ${NC} ${STATE}"
+        echo -e "${YELLOW}RX:       ${NC} ${RX_MB} MB"
+        echo -e "${YELLOW}TX:       ${NC} ${TX_MB} MB"
+        echo -e "${CYAN}========================================${NC}\n"
+    done
+}
+
+function show_tunnel_status() {
+    local GREEN="\e[32m"
+    local RED="\e[31m"
+    local CYAN="\e[36m"
+    local NC="\e[0m"
+
+    read -p "🔍 Enter tunnel interface (e.g. gre1): " IFACE
+
+    if ! ip tunnel show "$IFACE" &>/dev/null; then
+        echo -e "${RED}✘ Tunnel '${IFACE}' not found.${NC}"
+        return
+    fi
+
+    # key info
+    local TUNNEL_INFO
+    TUNNEL_INFO=$(ip tunnel show "$IFACE" | head -n 1)
+
+    local IP4
+    IP4=$(ip -4 addr show dev "$IFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | head -n 1)
+
+    local RX=$(cat /sys/class/net/"$IFACE"/statistics/rx_bytes 2>/dev/null || echo 0)
+    local TX=$(cat /sys/class/net/"$IFACE"/statistics/tx_bytes 2>/dev/null || echo 0)
+
+    local RX_MB=$(awk "BEGIN {printf \"%.1f\", $RX/1024/1024}")
+    local TX_MB=$(awk "BEGIN {printf \"%.1f\", $TX/1024/1024}")
+
+    # beutiful coler
+    echo -e "${CYAN}┌─ Tunnel Status: ${IFACE} ─────────────────────┐${NC}"
+    echo -e " ${GREEN}✓ Info:   ${NC}${TUNNEL_INFO}"
+    echo -e " ${GREEN}✓ IPv4:   ${NC}${IP4:-N/A}"
+    echo -e " ${GREEN}✓ RX/TX:  ${NC}${RX_MB} MB ↓ / ${TX_MB} MB ↑"
+    echo -e "${CYAN}└──────────────────────────────────────────────┘${NC}"
+}
+
+function enable_disable_tunnel() {
+    read -p "Enter tunnel interface to toggle (e.g. gre1): " IFACE
+    if [[ ! -f "$CONFIG_DIR/${IFACE}.conf" ]]; then
+        print_error "Tunnel config not found."
+        return
+    fi
+    read -p "Choose action: 1) Enable 2) Disable: " ACTION
+    case $ACTION in
+        1)
+            systemctl start gre-${IFACE}.service
+            systemctl enable gre-${IFACE}.service
+            print_success "Tunnel ${IFACE} enabled."
+            log_msg "Enabled GRE tunnel ${IFACE}"
+            ;;
+        2)
+            systemctl stop gre-${IFACE}.service
+            systemctl disable gre-${IFACE}.service
+            print_success "Tunnel ${IFACE} disabled."
+            log_msg "Disabled GRE tunnel ${IFACE}"
+            ;;
+        *)
+            print_error "Invalid action."
+            ;;
+    esac
+}
+
+function show_log() {
+    if [ ! -f "$LOG_FILE" ]; then
+        print_info "No logs found."
+        return
+    fi
+    echo -e "${BLUE}---- GRE Tunnel Manager Logs ----${NC}"
+    tail -n 20 "$LOG_FILE"
+}
+
+# === Menu ===
+
+function show_menu() {
+    clear
+    echo -e "${GREEN}=============================="
+    echo "       ____ ____   _____
+      / ___|  _ \ | ____|
+     | |  _| |_)| |  _|
+     | |_| |  __/ | |__|
+      \____|_| \_\|_____|
+
+       G R E   I P V 4
+
+==============================
+       creator: agha ahmad
+       telegram: @Special_WE"
+    echo -e "==============================${NC}"
+    echo -e "${GREEN}1) Install GRE Tunnel"
+    echo -e "${RED}2) Uninstall GRE Tunnel"
+    echo -e "${YELLOW}3) Restart GRE Tunnel"
+    echo -e "${GREEN}4) Optimize GRE Tunnel"
+    echo -e "${GREEN}5) Find Best MTU"
+    echo -e "${GREEN}6) List Tunnels"
+    echo -e "${GREEN}7) Show Tunnel Status"
+    echo -e "${GREEN}8) Enable/Disable Tunnel"
+    echo -e "${GREEN}9) Show Logs"
+    echo -e "${GREEN}0) Exit${NC}"
+    echo -e "${GREEN}==============================${NC}"
+    read -p "Choose an option: " OPTION
+}
+
+# === Main Loop ===
+while true; do
+    show_menu
+    case $OPTION in
+        1) install_gre ;;
+        2) uninstall_gre ;;
+        3) restart_gre ;;
+        4) optimize_tunnel ;;
+        5) find_best_mtu ;;
+        6) list_tunnels ;;
+        7) show_tunnel_status ;;
+        8) enable_disable_tunnel ;;
+        9) show_log ;;
+        0) echo -e "${GREEN}Bye!${NC}"; exit 0 ;;
+        *) print_error "Invalid option." ;;
+    esac
+    read -p "Press Enter to continue..." key
+done
