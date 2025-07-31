@@ -40,7 +40,8 @@ function create_gre_script() {
     local LOCAL_IP=$2
     local REMOTE_IP=$3
     local PRIV_IP=$4
-    local MTU=$5
+    local REMOTE_PRIV_IP=$5
+    local MTU=$6
 
     ensure_config_dir
 
@@ -51,6 +52,7 @@ ip tunnel add ${IFACE} mode gre local ${LOCAL_IP} remote ${REMOTE_IP} ttl 255
 ip link set ${IFACE} mtu ${MTU}
 ip link set ${IFACE} up
 ip addr add ${PRIV_IP} dev ${IFACE}
+ip route add ${REMOTE_PRIV_IP} dev ${IFACE}
 EOF
 
     chmod +x /usr/local/sbin/gre-${IFACE}.sh
@@ -92,7 +94,8 @@ function install_gre() {
 
     read -p "Local public IP (0.0.0.0): " LOCAL_IP
     read -p "Remote public IP: " REMOTE_IP
-    read -p "Private IP local with CIDR (e.g. 10.0.0.1/24): " PRIV_IP
+    read -p "local Private IP (e.g. 10.0.0.1/24): " PRIV_IP
+    read -p "Remote private IP (e.g. 10.0.0.2): " REMOTE_PRIV_IP
     read -p "MTU (default 1472): " MTU
     MTU=${MTU:-1472}
 
@@ -103,10 +106,11 @@ IFACE=${IFACE}
 LOCAL_IP=${LOCAL_IP}
 REMOTE_IP=${REMOTE_IP}
 PRIV_IP=${PRIV_IP}
+REMOTE_PRIV_IP=${REMOTE_PRIV_IP}
 MTU=${MTU}
 EOF
 
-    create_gre_script "$IFACE" "$LOCAL_IP" "$REMOTE_IP" "$PRIV_IP" "$MTU"
+    create_gre_script "$IFACE" "$LOCAL_IP" "$REMOTE_IP" "$PRIV_IP" "$REMOTE_PRIV_IP" "$MTU"
     create_systemd_service "$IFACE"
 
     systemctl daemon-reexec
