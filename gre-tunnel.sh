@@ -188,8 +188,8 @@ function optimize_tunnel() {
     apply_sysctl "net.ipv4.conf.${IFACE}.forwarding" 1
 
     # MTU optimization (dynamic)
-    ip link set dev "$IFACE" mtu 1400
-    echo -e "\e[32m✓ MTU set to 1400 on $IFACE\e[0m"
+    ip link set dev "$IFACE" mtu 1300
+    echo -e "\e[32m✓ MTU set to 1300 on $IFACE\e[0m"
 
     # General
     apply_sysctl "net.ipv4.ip_forward" 1
