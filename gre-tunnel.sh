@@ -58,11 +58,11 @@ EOF
     chmod +x /usr/local/sbin/gre-${IFACE}.sh
 }
 
-display_info() {
-    IP=$(curl -s ipv4.icanhazip.com)
-    ISP=$(curl -s https://ipinfo.io/org | sed 's/^.*: //')
-    echo -e "${CYAN}ipv4:${NC} $IP"
-    echo -e "${CYAN}isp :${NC} $ISP"
+display_server_info() {
+    echo -e "\e[93m═════════════════════════════════════════════\e[0m"  
+    echo -e "${CYAN}Server Country:${NC} $SERVER_COUNTRY"
+    echo -e "${CYAN}Server IP:${NC} $SERVER_IP"
+    echo -e "${CYAN}Server ISP:${NC} $SERVER_ISP"
 }
 
 function create_systemd_service() {
