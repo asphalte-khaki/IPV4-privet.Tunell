@@ -106,8 +106,8 @@ function install_gre() {
     read -p "Remote public IP: " REMOTE_IP
     read -p "local Private IP (e.g. 10.0.0.1/24): " PRIV_IP
     read -p "Remote private IP (e.g. 10.0.0.2): " REMOTE_PRIV_IP
-    read -p "MTU (default 1400): " MTU
-    MTU=${MTU:-1400}
+    read -p "MTU (default 1300): " MTU
+    MTU=${MTU:-1300}
 
     # Save config
     ensure_config_dir
