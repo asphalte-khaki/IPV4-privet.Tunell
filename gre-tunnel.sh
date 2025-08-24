@@ -437,7 +437,7 @@ function show_menu() {
        creator: agha ahmad
        telegram: @Special_WE"
     display_server_info
-    echo -e "==============================${NC}"
+    echo -e "${GREEN}=============================="
     echo -e "${GREEN}1) Install GRE Tunnel"
     echo -e "${RED}2) Uninstall GRE Tunnel"
     echo -e "${YELLOW}3) Restart GRE Tunnel"
