@@ -11,6 +11,7 @@ RED='\033[0;31m'
 BLUE='\033[0;36m'
 YELLOW='\033[1;33m'
 MAGENTA="\e[35m"
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 function log_msg() {
@@ -58,8 +59,17 @@ EOF
     chmod +x /usr/local/sbin/gre-${IFACE}.sh
 }
 
+# Get server IP
+SERVER_IP=$(hostname -I | awk '{print $1}')
+
+# Fetch server country using ip-api.com
+SERVER_COUNTRY=$(curl --max-time 3 -sS "http://ip-api.com/json/$SERVER_IP" | jq -r '.country')
+
+# Fetch server isp using ip-api.com 
+SERVER_ISP=$(curl --max-time 3 -sS "http://ip-api.com/json/$SERVER_IP" | jq -r '.isp')
+
 display_server_info() {
-    echo -e "\e[93m═════════════════════════════════════════════\e[0m"  
+    echo -e "${GREEN}=============================="  
     echo -e "${CYAN}Server Country:${NC} $SERVER_COUNTRY"
     echo -e "${CYAN}Server IP:${NC} $SERVER_IP"
     echo -e "${CYAN}Server ISP:${NC} $SERVER_ISP"
